@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Перевірка зʼєднання</title>
+<style>
+  :root { --bg:#fafaf8; --fg:#1b1b1a; --mute:#6b6b66; --line:#e2e1dc; --ok:#1f7a3f; --bad:#b3261e; --btn:#1b1b1a; --btnfg:#fff; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#151514; --fg:#ecebe6; --mute:#9a9992; --line:#2c2c2a; --ok:#5cc983; --bad:#ff8a80; --btn:#ecebe6; --btnfg:#151514; } }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.5 -apple-system, system-ui, sans-serif; }
+  main { max-width:640px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { font-size:22px; margin:0 0 8px; }
+  p { margin:0 0 16px; color:var(--mute); }
+  ul { list-style:none; padding:0; margin:0 0 20px; border-top:1px solid var(--line); }
+  li { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-bottom:1px solid var(--line); font-size:15px; }
+  li span:last-child { text-align:right; white-space:nowrap; }
+  .ok { color:var(--ok); } .bad { color:var(--bad); } .wait { color:var(--mute); }
+  button { font:inherit; font-weight:600; padding:12px 18px; border:0; border-radius:10px; background:var(--btn); color:var(--btnfg); cursor:pointer; width:100%; margin-bottom:10px; }
+  button:disabled { opacity:.4; }
+  textarea { width:100%; box-sizing:border-box; height:180px; font:12px/1.4 ui-monospace, Menlo, monospace; background:transparent; color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:8px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Перевірка зʼєднання</h1>
+  <p>Сторінка сама перевіряє, чи доходить ваш інтернет до сайту. Займає до 20 секунд. Потім натисніть «Скопіювати» і надішліть текст Олександру. У тексті — ваша IP-адреса, провайдер і браузер. Більше нічого.</p>
+  <ul id="list"></ul>
+  <button id="copy" disabled>Скопіювати результат</button>
+  <button id="share" disabled hidden>Надіслати…</button>
+  <textarea id="out" readonly></textarea>
+</main>
+<script>
+// Probes run in parallel; each resolves to a short text line. no-cors fetch: resolves on any HTTP answer, rejects on DNS/TCP/TLS failure.
+const T = 15000;
+const bust = '?check=' + Date.now();
+const timed = (p) => { const t0 = performance.now(); return p.then(v => [v, Math.round(performance.now() - t0)]); };
+const withTimeout = (fn) => { const c = new AbortController(); const id = setTimeout(() => c.abort(), T); return fn(c.signal).finally(() => clearTimeout(id)); };
+const reach = (url) => () => timed(withTimeout(s => fetch(url + bust, { mode: 'no-cors', cache: 'no-store', signal: s })))
+  .then(([, ms]) => ({ ok: true, text: `OK ${ms} мс` }), e => ({ ok: false, text: e.name === 'AbortError' ? `ТАЙМАУТ ${T / 1000} с` : 'ПОМИЛКА зʼєднання' }));
+const json = (url) => withTimeout(s => fetch(url, { cache: 'no-store', signal: s }).then(r => r.json()));
+const dns = (name, type) => () => json(`https://dns.google/resolve?name=${name}&type=${type}`)
+  .then(d => ({ ok: true, text: (d.Answer || []).filter(a => a.type === (type === 'A' ? 1 : 28)).map(a => a.data).join(' ') || '—' }), () => ({ ok: false, text: 'не вдалося' }));
+
+const probes = [
+  ['Сайт: kyryllov.com', reach('https://kyryllov.com/')],
+  ['Сайт: www.kyryllov.com', reach('https://www.kyryllov.com/')],
+  ['Сайт: design.kyryllov.com', reach('https://design.kyryllov.com/')],
+  ['Контроль: preview.kyryllov.com (Cloudflare)', reach('https://preview.kyryllov.com/')],
+  ['Контроль: google.com', reach('https://www.google.com/generate_204')],
+  ['IPv4', () => json('https://api.ipify.org?format=json').then(d => ({ ok: true, text: d.ip }), () => ({ ok: false, text: 'не визначено' }))],
+  ['IPv6', () => json('https://api6.ipify.org?format=json').then(d => ({ ok: true, text: d.ip }), () => ({ ok: true, text: 'нема IPv6' }))],
+  ['Провайдер', () => json('https://ipinfo.io/json').then(d => ({ ok: true, text: [d.org, d.city, d.country].filter(Boolean).join(', ') }))
+    .catch(() => json('https://ipapi.co/json/').then(d => ({ ok: true, text: [d.asn, d.org, d.city, d.country].filter(Boolean).join(', ') })))
+    .catch(() => ({ ok: false, text: 'не визначено' }))],
+  ['DNS (Google) A', dns('kyryllov.com', 'A')],
+  ['DNS (Google) AAAA', dns('kyryllov.com', 'AAAA')],
+];
+
+const list = document.getElementById('list'), out = document.getElementById('out');
+const rows = probes.map(([label]) => {
+  const li = document.createElement('li');
+  li.innerHTML = `<span></span><span class="wait">перевіряю…</span>`;
+  li.firstChild.textContent = label;
+  list.append(li);
+  return li.lastChild;
+});
+
+Promise.all(probes.map(([, run], i) => run().then(r => {
+  rows[i].textContent = r.text;
+  rows[i].className = r.ok ? 'ok' : 'bad';
+  return `${probes[i][0]}: ${r.text}`;
+}))).then(lines => {
+  const conn = navigator.connection ? ` · мережа ${navigator.connection.effectiveType || ''}` : '';
+  out.value = [
+    `kyryllov.com check · ${new Date().toISOString()} · TZ ${Intl.DateTimeFormat().resolvedOptions().timeZone}${conn}`,
+    ...lines,
+    `Браузер: ${navigator.userAgent}`,
+  ].join('\n');
+  const copy = document.getElementById('copy'), share = document.getElementById('share');
+  copy.disabled = false;
+  copy.onclick = () => navigator.clipboard.writeText(out.value).then(() => copy.textContent = 'Скопійовано ✓', () => { out.select(); copy.textContent = 'Виділено — скопіюйте вручну'; });
+  if (navigator.share) { share.hidden = false; share.disabled = false; share.onclick = () => navigator.share({ text: out.value }).catch(() => {}); }
+});
+</script>
+</body>
+</html>
